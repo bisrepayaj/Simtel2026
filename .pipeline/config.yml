@@ -1,0 +1,11 @@
+# .pipeline/config.yml
+# Piper settings for the quality-check job. Host, client, credentials and
+# repository come from PIPER_* environment variables set in the workflow.
+
+steps:
+  gctsExecuteABAPQualityChecks:
+    scope: "remoteChangedObjects"    # objects changed between the triggering commit and the remote head
+    aUnitTest: true
+    atcCheck: true
+    atcVariant: "DEFAULT"         # replace with your ATC check variant
+    skipSSLVerification: true

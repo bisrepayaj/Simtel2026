@@ -1,0 +1,149 @@
+# .github/workflows/abap-transport.yml
+#
+# Every TR released in DEV pushes a commit to `main`.
+# 1. ATC + ABAP Unit run on DEV for the changed objects
+#    (Piper CLI step gctsExecuteABAPQualityChecks). Errors stop the pipeline.
+# 2. The commit waits for QAS approval, then is pulled into QAS (direct gCTS REST call).
+# 3. It waits for PRD approval, then is pulled into PRD (direct gCTS REST call).
+#
+# Prerequisites
+# - .pipeline/config.yml from this repo (quality-check settings).
+# - GitHub Environments "DEV", "QAS", "PRD". QAS and PRD have required reviewers.
+#   Each environment has:
+#     vars:    SAP_HOST (https://host:port), SAP_CLIENT
+#     secrets: SAP_USER, SAP_PASSWORD
+#   Repository-level var: GCTS_REPO (gCTS repository ID, same on all systems)
+# - The gCTS repository already exists and is cloned on QAS and PRD,
+#   with automatic pull switched off.
+# - Self-hosted Linux runner inside your network with curl, jq and python3.
+
+name: ABAP transport
+
+on:
+  push:
+    branches: [master]
+
+# Only the newest commit waits at each gate. Pulling it brings
+# all earlier released TRs with it. Never approve an older pending run
+# after a newer one has been deployed: gCTS would import the
+# difference, which rolls the newer changes back.
+concurrency:
+  group: abap-transport
+  cancel-in-progress: false
+
+jobs:
+  quality-checks:
+    runs-on: [self-hosted, sap]
+    environment: DEV
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ATC and ABAP Unit on DEV
+        env:
+          PIPER_host: ${{ vars.SAP_HOST }}
+          PIPER_client: ${{ vars.SAP_CLIENT }}
+          PIPER_username: ${{ secrets.SAP_USER }}
+          PIPER_password: ${{ secrets.SAP_PASSWORD }}
+          PIPER_repository: ${{ vars.GCTS_REPO }}
+        run: piper gctsExecuteABAPQualityChecks --commit "${{ github.sha }}" --workspace "$GITHUB_WORKSPACE"
+
+      # Piper writes findings to Checkstyle XML (meant for Jenkins Warnings-NG).
+      # This turns them into GitHub annotations and fails the job on errors
+      # (ATC priority 1-2, failed unit tests with severity fatal/critical).
+      - name: Report findings and gate on errors
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import os, sys, xml.etree.ElementTree as ET
+          errors = warnings = 0
+          for name in ("ATCResults.xml", "AUnitResults.xml"):
+              path = os.path.join(os.environ["GITHUB_WORKSPACE"], name)
+              if not os.path.exists(path):
+                  print(f"{name}: not produced")
+                  continue
+              for f in ET.parse(path).getroot().iter("file"):
+                  for e in f.iter("error"):
+                      sev = e.get("severity", "error")
+                      level = "error" if sev == "error" else "warning"
+                      msg = (e.get("message") or "").replace("\n", " ")
+                      print(f"::{level} title={name} {f.get('name')} line {e.get('line', '?')}::{msg}")
+                      if level == "error":
+                          errors += 1
+                      else:
+                          warnings += 1
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write(f"### ABAP quality checks\n\nErrors: **{errors}**, warnings: {warnings}\n")
+          sys.exit(1 if errors else 0)
+          EOF
+
+      - name: Keep check results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: abap-check-results
+          path: |
+            ATCResults.xml
+            AUnitResults.xml
+          if-no-files-found: ignore
+
+  # deploy-qas:
+  #   needs: quality-checks
+  #   runs-on: [self-hosted, sap]
+  #   environment: QAS
+  #   steps:
+  #     - name: Pull commit into QAS
+  #       env:
+  #         SAP_HOST: ${{ vars.SAP_HOST }}
+  #         SAP_CLIENT: ${{ vars.SAP_CLIENT }}
+  #         SAP_USER: ${{ secrets.SAP_USER }}
+  #         SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
+  #         GCTS_REPO: ${{ vars.GCTS_REPO }}
+  #         COMMIT: ${{ github.sha }}
+  #       run: |
+  #         set -euo pipefail
+  #         url="$SAP_HOST/sap/bc/cts_abapvcs/repository/$GCTS_REPO/pullByCommit?sap-client=$SAP_CLIENT&request=$COMMIT"
+  #         status=$(curl -sS -o response.json -w '%{http_code}' \
+  #           -u "$SAP_USER:$SAP_PASSWORD" -H 'Accept: application/json' "$url")
+  #         if [ "$status" != "200" ]; then
+  #           echo "::error::gCTS pull failed with HTTP $status"
+  #           jq -r '.exception // empty, (.errorLog[]? | "\(.severity): \(.message)")' response.json || cat response.json
+  #           exit 1
+  #         fi
+  #         to=$(jq -r '.toCommit // empty' response.json)
+  #         from=$(jq -r '.fromCommit // empty' response.json)
+  #         echo "Pulled $GCTS_REPO from $from to $to"
+  #         if [ "$to" != "$COMMIT" ]; then
+  #           echo "::error::System is on $to, expected $COMMIT"
+  #           exit 1
+  #         fi
+
+  # deploy-prd:
+  #   needs: deploy-qas
+  #   runs-on: [self-hosted, sap]
+  #   environment: PRD
+  #   steps:
+  #     - name: Pull commit into PRD
+  #       env:
+  #         SAP_HOST: ${{ vars.SAP_HOST }}
+  #         SAP_CLIENT: ${{ vars.SAP_CLIENT }}
+  #         SAP_USER: ${{ secrets.SAP_USER }}
+  #         SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
+  #         GCTS_REPO: ${{ vars.GCTS_REPO }}
+  #         COMMIT: ${{ github.sha }}
+  #       run: |
+  #         set -euo pipefail
+  #         url="$SAP_HOST/sap/bc/cts_abapvcs/repository/$GCTS_REPO/pullByCommit?sap-client=$SAP_CLIENT&request=$COMMIT"
+  #         status=$(curl -sS -o response.json -w '%{http_code}' \
+  #           -u "$SAP_USER:$SAP_PASSWORD" -H 'Accept: application/json' "$url")
+  #         if [ "$status" != "200" ]; then
+  #           echo "::error::gCTS pull failed with HTTP $status"
+  #           jq -r '.exception // empty, (.errorLog[]? | "\(.severity): \(.message)")' response.json || cat response.json
+  #           exit 1
+  #         fi
+  #         to=$(jq -r '.toCommit // empty' response.json)
+  #         from=$(jq -r '.fromCommit // empty' response.json)
+  #         echo "Pulled $GCTS_REPO from $from to $to"
+  #         if [ "$to" != "$COMMIT" ]; then
+  #           echo "::error::System is on $to, expected $COMMIT"
+  #           exit 1
+  #         fi
