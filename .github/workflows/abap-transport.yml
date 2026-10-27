@@ -37,14 +37,12 @@ jobs:
     environment: DEV
     steps:
       - uses: actions/checkout@v4
-
       - name: ATC and ABAP Unit on DEV
         env:
           PIPER_host: ${{ vars.SAP_HOST }}
           PIPER_client: ${{ vars.SAP_CLIENT }}
           PIPER_username: ${{ secrets.SAP_USER }}
           PIPER_password: ${{ secrets.SAP_PASSWORD }}
-          PIPER_repository: ${{ vars.GCTS_REPO }}
         run: piper gctsExecuteABAPQualityChecks --commit "${{ github.sha }}" --workspace "$GITHUB_WORKSPACE"
 
       # Piper writes findings to Checkstyle XML (meant for Jenkins Warnings-NG).
@@ -75,7 +73,6 @@ jobs:
               s.write(f"### ABAP quality checks\n\nErrors: **{errors}**, warnings: {warnings}\n")
           sys.exit(1 if errors else 0)
           EOF
-
       - name: Keep check results
         if: always()
         uses: actions/upload-artifact@v4
@@ -86,64 +83,30 @@ jobs:
             AUnitResults.xml
           if-no-files-found: ignore
 
-  # deploy-qas:
-  #   needs: quality-checks
-  #   runs-on: [self-hosted, sap]
-  #   environment: QAS
-  #   steps:
-  #     - name: Pull commit into QAS
-  #       env:
-  #         SAP_HOST: ${{ vars.SAP_HOST }}
-  #         SAP_CLIENT: ${{ vars.SAP_CLIENT }}
-  #         SAP_USER: ${{ secrets.SAP_USER }}
-  #         SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
-  #         GCTS_REPO: ${{ vars.GCTS_REPO }}
-  #         COMMIT: ${{ github.sha }}
-  #       run: |
-  #         set -euo pipefail
-  #         url="$SAP_HOST/sap/bc/cts_abapvcs/repository/$GCTS_REPO/pullByCommit?sap-client=$SAP_CLIENT&request=$COMMIT"
-  #         status=$(curl -sS -o response.json -w '%{http_code}' \
-  #           -u "$SAP_USER:$SAP_PASSWORD" -H 'Accept: application/json' "$url")
-  #         if [ "$status" != "200" ]; then
-  #           echo "::error::gCTS pull failed with HTTP $status"
-  #           jq -r '.exception // empty, (.errorLog[]? | "\(.severity): \(.message)")' response.json || cat response.json
-  #           exit 1
-  #         fi
-  #         to=$(jq -r '.toCommit // empty' response.json)
-  #         from=$(jq -r '.fromCommit // empty' response.json)
-  #         echo "Pulled $GCTS_REPO from $from to $to"
-  #         if [ "$to" != "$COMMIT" ]; then
-  #           echo "::error::System is on $to, expected $COMMIT"
-  #           exit 1
-  #         fi
+  deploy-qas:
+    needs: quality-checks
+    runs-on: [self-hosted, sap]
+    environment: QAS
+    steps:
+      - uses: actions/checkout@v4      # provides .pipeline/config.yml
+      - name: Pull commit into QAS
+        env:
+          PIPER_host: ${{ vars.SAP_HOST }}
+          PIPER_client: ${{ vars.SAP_CLIENT }}
+          PIPER_username: ${{ secrets.SAP_USER }}
+          PIPER_password: ${{ secrets.SAP_PASSWORD }}
+        run: piper gctsDeploy --commit "${{ github.sha }}"
 
   # deploy-prd:
   #   needs: deploy-qas
   #   runs-on: [self-hosted, sap]
   #   environment: PRD
   #   steps:
+  #     - uses: actions/checkout@v4
   #     - name: Pull commit into PRD
   #       env:
-  #         SAP_HOST: ${{ vars.SAP_HOST }}
-  #         SAP_CLIENT: ${{ vars.SAP_CLIENT }}
-  #         SAP_USER: ${{ secrets.SAP_USER }}
-  #         SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
-  #         GCTS_REPO: ${{ vars.GCTS_REPO }}
-  #         COMMIT: ${{ github.sha }}
-  #       run: |
-  #         set -euo pipefail
-  #         url="$SAP_HOST/sap/bc/cts_abapvcs/repository/$GCTS_REPO/pullByCommit?sap-client=$SAP_CLIENT&request=$COMMIT"
-  #         status=$(curl -sS -o response.json -w '%{http_code}' \
-  #           -u "$SAP_USER:$SAP_PASSWORD" -H 'Accept: application/json' "$url")
-  #         if [ "$status" != "200" ]; then
-  #           echo "::error::gCTS pull failed with HTTP $status"
-  #           jq -r '.exception // empty, (.errorLog[]? | "\(.severity): \(.message)")' response.json || cat response.json
-  #           exit 1
-  #         fi
-  #         to=$(jq -r '.toCommit // empty' response.json)
-  #         from=$(jq -r '.fromCommit // empty' response.json)
-  #         echo "Pulled $GCTS_REPO from $from to $to"
-  #         if [ "$to" != "$COMMIT" ]; then
-  #           echo "::error::System is on $to, expected $COMMIT"
-  #           exit 1
-  #         fi
+  #         PIPER_host: ${{ vars.SAP_HOST }}
+  #         PIPER_client: ${{ vars.SAP_CLIENT }}
+  #         PIPER_username: ${{ secrets.SAP_USER }}
+  #         PIPER_password: ${{ secrets.SAP_PASSWORD }}
+  #       run: piper gctsDeploy --commit "${{ github.sha }}"

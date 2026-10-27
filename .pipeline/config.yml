@@ -2,10 +2,21 @@
 # Piper settings for the quality-check job. Host, client, credentials and
 # repository come from PIPER_* environment variables set in the workflow.
 
+general:
+  repository: "bisrepayaj-simtel2026"        # gCTS repository ID on DEV, QAS and PRD
+
 steps:
   gctsExecuteABAPQualityChecks:
     scope: "remoteChangedObjects"    # objects changed between the triggering commit and the remote head
     aUnitTest: true
     atcCheck: true
     atcVariant: "DEFAULT"         # replace with your ATC check variant
+    skipSSLVerification: true
+
+  gctsDeploy:
+    # Used only if the repository does not exist yet on the target:
+    remoteRepositoryURL: "https://github.com/bisrepayaj/Simtel2026.git"
+    role: "TARGET"
+    vSID: "GIT"                     # virtual SID defined for the repository
+    rollback: true                  # On a failed pull, roll the target back to the previously active commit:
     skipSSLVerification: true
