@@ -29,4 +29,4 @@ ENDCLASS.
 
 
 START-OF-SELECTION.
-  WRITE: 'Hello World'.
+  WRITE: 'Hello World!'.
